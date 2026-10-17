@@ -34,6 +34,9 @@ use crate::package_xml::PackageXml;
 #[derive(Default, Clone)]
 pub struct RosGenerator {}
 
+/// Python sources that are copied into the package by a non-editable install.
+const PYTHON_SOURCE_GLOBS: [&str; 2] = ["**/*.py", "**/*.pyx"];
+
 #[async_trait::async_trait]
 impl GenerateRecipe for RosGenerator {
     type Config = RosBackendConfig;
@@ -52,7 +55,7 @@ impl GenerateRecipe for RosGenerator {
         config: &Self::Config,
         manifest_path: PathBuf,
         host_platform: Subdir,
-        _python_params: Option<PythonParams>,
+        python_params: Option<PythonParams>,
         _variants: &HashSet<NormalizedKey>,
         channels: Vec<ChannelUrl>,
         _cache_dir: Option<PathBuf>,
@@ -297,7 +300,20 @@ impl GenerateRecipe for RosGenerator {
 
         // Generate build script
         let build_type = package_xml.build_type();
-        let build_script_content = render_build_script(&build_type, &distro.name, &manifest_root)?;
+        // Only the unix `ament_python` template knows how to install editable.
+        let editable = build_type == "ament_python"
+            && !Subdir::current().unwrap_or(Subdir::NoArch).is_windows()
+            && python_params.is_some_and(|params| params.editable);
+        let build_script_content =
+            render_build_script(&build_type, &distro.name, &manifest_root, editable)?;
+
+        // An editable install runs the Python sources from the source tree, so
+        // they only need to trigger a rebuild when they are baked into the package.
+        if !editable {
+            generated_recipe
+                .build_input_globs
+                .extend(PYTHON_SOURCE_GLOBS.iter().map(|s| s.to_string()));
+        }
 
         let mut script_env: indexmap::IndexMap<String, Value<String>> = indexmap::IndexMap::new();
         script_env.insert(
@@ -340,8 +356,6 @@ impl GenerateRecipe for RosGenerator {
             "**/*.hpp",
             "**/*.rs",
             "**/*.sh",
-            "**/*.py",
-            "**/*.pyx",
             "package.xml",
             "setup.py",
             "setup.cfg",
@@ -1588,6 +1602,89 @@ mod tests {
         assert!(
             self_in_build.is_none(),
             "current package must not list itself as a source dep: {self_in_build:?}"
+        );
+    }
+
+    async fn generate_ament_python_recipe(editable: bool) -> GeneratedRecipe {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let temp_path = temp_dir.path();
+        fs::write(
+            temp_path.join("package.xml"),
+            r#"<?xml version="1.0"?>
+<package format="3">
+  <name>py_pkg</name>
+  <version>0.0.1</version>
+  <description>test</description>
+  <maintainer email="test@example.com">Tester</maintainer>
+  <license>MIT</license>
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
+"#,
+        )
+        .unwrap();
+
+        let model = project_fixture!({
+            "targets": {
+                "defaultTarget": {}
+            }
+        });
+        let config = RosBackendConfig {
+            distro: Some("jazzy".to_string()),
+            ..Default::default()
+        };
+
+        RosGenerator::default()
+            .generate_recipe(
+                &model,
+                &config,
+                temp_path.to_path_buf(),
+                Subdir::Linux64,
+                Some(PythonParams { editable }),
+                &HashSet::new(),
+                vec![],
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .expect("Failed to generate recipe")
+    }
+
+    fn build_script_content(generated: &GeneratedRecipe) -> String {
+        let script = generated.recipe.build.plan.script().expect("script mode");
+        serde_json::to_string(script).unwrap()
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_ament_python_editable_skips_python_source_globs() {
+        let generated = generate_ament_python_recipe(true).await;
+
+        assert!(
+            !generated
+                .build_input_globs
+                .iter()
+                .any(|glob| glob == "**/*.py"),
+            "editable builds must not rebuild on Python source changes: {:?}",
+            generated.build_input_globs
+        );
+        assert!(build_script_content(&generated).contains(r#"if [ \"true\" = \"true\" ]"#));
+    }
+
+    #[tokio::test]
+    async fn test_ament_python_non_editable_tracks_python_source_globs() {
+        let generated = generate_ament_python_recipe(false).await;
+
+        assert!(
+            generated
+                .build_input_globs
+                .iter()
+                .any(|glob| glob == "**/*.py"),
+            "non-editable builds bake in Python sources and must track them: {:?}",
+            generated.build_input_globs
         );
     }
 }

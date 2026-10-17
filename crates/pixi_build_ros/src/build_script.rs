@@ -17,11 +17,12 @@ pub enum BuildScriptError {
 /// Render a build script from the appropriate template.
 ///
 /// Selects the template based on `build_type` and platform, then performs
-/// variable substitution.
+/// variable substitution. `editable` only affects `ament_python` packages.
 pub fn render_build_script(
     build_type: &str,
     distro: &str,
     source_dir: &Path,
+    editable: bool,
 ) -> Result<String, BuildScriptError> {
     // Use the current (build) platform, not the host/target platform.
     // The build script runs on the build machine.
@@ -33,7 +34,8 @@ pub fn render_build_script(
         .replace("@SRC_DIR@", &src_dir_str)
         .replace("@DISTRO@", distro)
         .replace("@BUILD_DIR@", "build")
-        .replace("@BUILD_TYPE@", "Release");
+        .replace("@BUILD_TYPE@", "Release")
+        .replace("@EDITABLE@", if editable { "true" } else { "false" });
 
     Ok(rendered)
 }
@@ -60,7 +62,8 @@ mod tests {
     #[test]
     fn test_render_ament_cmake() {
         let script =
-            render_build_script("ament_cmake", "humble", &PathBuf::from("/my/source")).unwrap();
+            render_build_script("ament_cmake", "humble", &PathBuf::from("/my/source"), false)
+                .unwrap();
 
         assert!(script.contains("/my/source"));
         assert!(script.contains("Release"));
@@ -70,15 +73,28 @@ mod tests {
 
     #[test]
     fn test_render_ament_python() {
-        let script = render_build_script("ament_python", "jazzy", &PathBuf::from("/src")).unwrap();
+        let script =
+            render_build_script("ament_python", "jazzy", &PathBuf::from("/src"), false).unwrap();
 
         assert!(script.contains("/src"));
         assert!(!script.contains("@SRC_DIR@"));
+        assert!(script.contains("if [ \"false\" = \"true\" ]"));
+    }
+
+    #[test]
+    fn test_render_ament_python_editable() {
+        let script =
+            render_build_script("ament_python", "jazzy", &PathBuf::from("/src"), true).unwrap();
+
+        assert!(script.contains("if [ \"true\" = \"true\" ]"));
+        assert!(script.contains("--editable"));
+        assert!(!script.contains("@EDITABLE@"));
     }
 
     #[test]
     fn test_render_catkin() {
-        let script = render_build_script("catkin", "noetic", &PathBuf::from("/pkg")).unwrap();
+        let script =
+            render_build_script("catkin", "noetic", &PathBuf::from("/pkg"), false).unwrap();
 
         assert!(script.contains("/pkg"));
         assert!(script.contains("noetic"));
@@ -86,7 +102,7 @@ mod tests {
 
     #[test]
     fn test_unsupported_build_type() {
-        let result = render_build_script("unknown_type", "jazzy", &PathBuf::from("/src"));
+        let result = render_build_script("unknown_type", "jazzy", &PathBuf::from("/src"), false);
         assert!(matches!(
             result,
             Err(BuildScriptError::UnsupportedBuildType { .. })

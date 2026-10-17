@@ -1,5 +1,6 @@
 """Integration tests for the pixi-build-ros backend."""
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -173,3 +174,39 @@ def test_ros_python_rebuild_omits_removed_module(
     stale_module.unlink()
     second_package = _publish(pixi, manifest_path, workspace.joinpath("dist-second"))
     assert not [path for path in package_files(second_package) if "stale" in path]
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(sys.platform == "win32", reason="editable ament_python is unix only")
+def test_ros_python_installs_editable(
+    pixi: Path, build_data: Path, tmp_pixi_workspace: Path
+) -> None:
+    workspace = _prepare_ros_workspace(build_data, tmp_pixi_workspace)
+    manifest_path = workspace.joinpath("pixi.toml")
+    package_dir = workspace.joinpath("src", "navigator_py")
+
+    verify_cli_command([pixi, "install", "-v", "--manifest-path", manifest_path])
+
+    # The ament index and shared resources still come from `setup.py install`.
+    env_dir = workspace.joinpath(".pixi", "envs", "default")
+    assert env_dir.joinpath(
+        "share", "ament_index", "resource_index", "packages", "navigator_py"
+    ).is_file()
+    assert env_dir.joinpath("share", "navigator_py", "package.xml").is_file()
+
+    # A module added after the install resolves from the source tree without a rebuild.
+    package_dir.joinpath("navigator_py", "added_after_install.py").write_text(
+        "LOCATION = __file__\n"
+    )
+    verify_cli_command(
+        [
+            pixi,
+            "run",
+            "--manifest-path",
+            manifest_path,
+            "python",
+            "-c",
+            "import navigator_py.added_after_install as m; print(m.LOCATION)",
+        ],
+        stdout_contains=str(package_dir.joinpath("navigator_py", "added_after_install.py")),
+    )
