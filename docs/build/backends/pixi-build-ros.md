@@ -223,7 +223,7 @@ extra-input-globs = [
 
 Default input globs include:
 
-- Source files: `**/*.{c,cpp,h,hpp,rs,sh,py,pyx}`
+- Source files: `**/*.{c,cpp,h,hpp,rs,sh}`, plus `**/*.{py,pyx}` unless the build is an [editable install](#editable-installations)
 - ROS configuration: `package.xml`, `setup.py`, `setup.cfg`, `pyproject.toml`
 - Build files: `CMakeLists.txt`
 - Launch files: `launch/**/*.py`
@@ -334,6 +334,18 @@ For Python packages using ament build system:
   <build_type>ament_python</build_type>
 </export>
 ```
+
+#### Editable Installations
+
+`ament_python` packages follow the same editable behaviour as [`pixi-build-python`](pixi-build-python.md#editable-installations):
+
+- `editable` is `true` when installing the package (e.g. with `pixi install`)
+- `editable` is `false` when building the package (e.g. with `pixi publish`)
+
+An editable install points the Python package at the source tree, so changes to `.py` files take effect without a rebuild.
+The shared resources from `data_files` (the ament index marker, `package.xml`, launch files, ...) and the console scripts are still copied into the environment, so changing those, `setup.py` or `setup.cfg` triggers a rebuild.
+
+Editable installations are not supported on Windows yet; there the package is always installed non-editable.
 
 ### catkin (ROS1)
 For ROS1 packages using catkin build system:
